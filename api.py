@@ -11,7 +11,7 @@ Endpoints:
 - GET /conditions - Get list of available conditions
 
 Installation:
-pip install fastapi uvicorn python-multipart pillow tensorflow numpy pandas gdown
+pip install fastapi uvicorn python-multipart pillow tensorflow numpy pandas huggingface-hub
 
 Run:
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
@@ -22,9 +22,7 @@ import warnings
 import logging
 from typing import List, Dict, Any, Optional
 from io import BytesIO
-import base64
-import zipfile
-import shutil
+from pathlib import Path
 
 # Suppress warnings
 os.environ['TF_CPP_MIN_LOG_LEVEL'] = '2'
@@ -45,7 +43,7 @@ import numpy as np
 from PIL import Image
 import pickle
 import pandas as pd
-import gdown
+from huggingface_hub import hf_hub_download
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -63,8 +61,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Configuration - UPDATE THESE WITH YOUR GOOGLE DRIVE FILE IDs
-GDRIVE_DERM_FOUNDATION_ID = "1EW6cgnhE0yuFWmKNXr7gsuyoAOXWhO10"  # Replace with your file ID
+# Configuration
+HF_REPO_ID = "google/derm-foundation"
 DERM_FOUNDATION_PATH = "./derm_foundation/"
 
 # Response Models
@@ -199,35 +197,41 @@ class DermFoundationNeuralNetwork:
         }
 
 
-# Helper function to download from Google Drive
-def download_from_gdrive(file_id, output_path, is_folder=False):
-    """Download file or folder from Google Drive"""
+# Helper function to download from Hugging Face
+def download_derm_foundation_from_hf(output_dir):
+    """Download Derm Foundation model from Hugging Face"""
     try:
-        print(f"Downloading from Google Drive (ID: {file_id})...")
+        print(f"Downloading Derm Foundation model from Hugging Face...")
+        os.makedirs(output_dir, exist_ok=True)
         
-        if is_folder:
-            # For folders, download as zip
-            url = f"https://drive.google.com/uc?id={file_id}"
-            zip_path = output_path + ".zip"
-            gdown.download(url, zip_path, quiet=False, fuzzy=True)
-            
-            # Extract zip
-            print(f"Extracting to {output_path}...")
-            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
-                zip_ref.extractall(os.path.dirname(output_path))
-            
-            os.remove(zip_path)
-            print(f"Downloaded and extracted successfully")
-        else:
-            # For single files
-            url = f"https://drive.google.com/uc?id={file_id}"
-            os.makedirs(os.path.dirname(output_path), exist_ok=True)
-            gdown.download(url, output_path, quiet=False, fuzzy=True)
-            print(f"Downloaded successfully to {output_path}")
+        # Files to download
+        files_to_download = [
+            "saved_model.pb",
+            "variables/variables.data-00000-of-00001",
+            "variables/variables.index"
+        ]
         
+        for file_path in files_to_download:
+            print(f"Downloading {file_path}...")
+            local_path = os.path.join(output_dir, file_path)
+            
+            # Create subdirectories if needed
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            
+            # Download file
+            downloaded_path = hf_hub_download(
+                repo_id=HF_REPO_ID,
+                filename=file_path,
+                cache_dir=None,  # Use default cache
+                local_dir=output_dir,
+                local_dir_use_symlinks=False
+            )
+            print(f"Downloaded: {file_path}")
+        
+        print(f"Derm Foundation model downloaded successfully to {output_dir}")
         return True
     except Exception as e:
-        print(f"Error downloading from Google Drive: {e}")
+        print(f"Error downloading from Hugging Face: {e}")
         return False
 
 
@@ -398,32 +402,20 @@ async def load_models():
     """Load models on startup"""
     global derm_model, easi_model
     
-    # Download Derm Foundation model from Google Drive if not present
+    # Download Derm Foundation model from Hugging Face if not present
     if not os.path.exists(DERM_FOUNDATION_PATH) or not os.path.exists(os.path.join(DERM_FOUNDATION_PATH, "saved_model.pb")):
-        print("Derm Foundation model not found locally. Downloading from Google Drive...")
-        success = download_from_gdrive(GDRIVE_DERM_FOUNDATION_ID, DERM_FOUNDATION_PATH, is_folder=True)
+        print("Derm Foundation model not found locally. Downloading from Hugging Face...")
+        success = download_derm_foundation_from_hf(DERM_FOUNDATION_PATH)
         if not success:
             print("WARNING: Failed to download Derm Foundation model!")
     
     # Load Derm Foundation model
-    local_model_paths = [
-        DERM_FOUNDATION_PATH,
-        "./derm_foundation/",
-        "./",
-        "./saved_model/",
-        "./model/"
-    ]
-    
-    for model_path in local_model_paths:
-        saved_model_pb = os.path.join(model_path, "saved_model.pb")
-        if os.path.exists(saved_model_pb):
-            try:
-                derm_model = tf.saved_model.load(model_path)
-                print(f"Derm-Foundation model loaded from: {model_path}")
-                break
-            except Exception as e:
-                print(f"Failed to load from {model_path}: {str(e)[:100]}")
-                continue
+    if os.path.exists(os.path.join(DERM_FOUNDATION_PATH, "saved_model.pb")):
+        try:
+            derm_model = tf.saved_model.load(DERM_FOUNDATION_PATH)
+            print(f"Derm-Foundation model loaded from: {DERM_FOUNDATION_PATH}")
+        except Exception as e:
+            print(f"Failed to load Derm Foundation model: {str(e)}")
     
     # Load EASI model (keep this local in your repo)
     model_path = './trained_model/easi_severity_model_derm_foundation_individual.pkl'
