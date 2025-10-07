@@ -15,6 +15,9 @@ pip install fastapi uvicorn python-multipart pillow tensorflow numpy pandas hugg
 
 Run:
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
+
+Environment Variables:
+- HF_TOKEN: Hugging Face API token (required for model download)
 """
 
 import os
@@ -63,7 +66,7 @@ app.add_middleware(
 
 # Configuration
 HF_REPO_ID = "google/derm-foundation"
-HF_TOKEN = os.environ.get("HF_TOKEN")  # Load from environment or use fallback
+HF_TOKEN = os.environ.get("HF_TOKEN")  # Read from environment variable (GitHub Secret)
 DERM_FOUNDATION_PATH = "./derm_foundation/"
 
 # Response Models
@@ -202,6 +205,12 @@ class DermFoundationNeuralNetwork:
 def download_derm_foundation_from_hf(output_dir):
     """Download Derm Foundation model from Hugging Face"""
     try:
+        # Check if HF_TOKEN is available
+        if not HF_TOKEN:
+            print("WARNING: HF_TOKEN environment variable not set!")
+            print("Model download may fail if repository requires authentication.")
+            return False
+        
         print(f"Downloading Derm Foundation model from Hugging Face...")
         os.makedirs(output_dir, exist_ok=True)
         
@@ -219,11 +228,11 @@ def download_derm_foundation_from_hf(output_dir):
             # Create subdirectories if needed
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             
-            # Download file
+            # Download file with token
             downloaded_path = hf_hub_download(
                 repo_id=HF_REPO_ID,
                 filename=file_path,
-                token=HF_TOKEN,
+                token=HF_TOKEN,  # Uses token from environment variable
                 cache_dir=None,  # Use default cache
                 local_dir=output_dir,
                 local_dir_use_symlinks=False
