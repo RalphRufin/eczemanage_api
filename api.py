@@ -15,9 +15,6 @@ pip install fastapi uvicorn python-multipart pillow tensorflow numpy pandas hugg
 
 Run:
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
-
-Environment Variables:
-- HF_TOKEN: Hugging Face API token (required for model download)
 """
 
 import os
@@ -46,7 +43,7 @@ import numpy as np
 from PIL import Image
 import pickle
 import pandas as pd
-from huggingface_hub import hf_hub_download
+from huggingface_hub import hf_hub_download, login
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -66,8 +63,10 @@ app.add_middleware(
 
 # Configuration
 HF_REPO_ID = "google/derm-foundation"
-HF_TOKEN = os.environ.get("HF_TOKEN")  # Read from environment variable (GitHub Secret)
 DERM_FOUNDATION_PATH = "./derm_foundation/"
+
+# Get Hugging Face token from environment variable
+HF_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
 
 # Response Models
 class ConditionPrediction(BaseModel):
@@ -96,6 +95,7 @@ class HealthResponse(BaseModel):
     status: str
     models_loaded: Dict[str, bool]
     available_conditions: int
+    hf_token_configured: bool
 
 class ErrorResponse(BaseModel):
     success: bool = False
@@ -205,11 +205,12 @@ class DermFoundationNeuralNetwork:
 def download_derm_foundation_from_hf(output_dir):
     """Download Derm Foundation model from Hugging Face"""
     try:
-        # Check if HF_TOKEN is available
-        if not HF_TOKEN:
-            print("WARNING: HF_TOKEN environment variable not set!")
-            print("Model download may fail if repository requires authentication.")
-            return False
+        # Login to Hugging Face if token is available
+        if HF_TOKEN:
+            print("Authenticating with Hugging Face...")
+            login(token=HF_TOKEN)
+        else:
+            print("WARNING: No HF token found. Attempting download without authentication...")
         
         print(f"Downloading Derm Foundation model from Hugging Face...")
         os.makedirs(output_dir, exist_ok=True)
@@ -228,12 +229,12 @@ def download_derm_foundation_from_hf(output_dir):
             # Create subdirectories if needed
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             
-            # Download file with token
+            # Download file with token if available
             downloaded_path = hf_hub_download(
                 repo_id=HF_REPO_ID,
                 filename=file_path,
-                token=HF_TOKEN,  # Uses token from environment variable
-                cache_dir=None,  # Use default cache
+                token=HF_TOKEN,  # Pass token explicitly
+                cache_dir=None,
                 local_dir=output_dir,
                 local_dir_use_symlinks=False
             )
@@ -243,6 +244,7 @@ def download_derm_foundation_from_hf(output_dir):
         return True
     except Exception as e:
         print(f"Error downloading from Hugging Face: {e}")
+        print(f"Make sure HUGGINGFACE_TOKEN is set in Render environment variables")
         return False
 
 
@@ -413,6 +415,15 @@ async def load_models():
     """Load models on startup"""
     global derm_model, easi_model
     
+    # Check for HF token
+    if not HF_TOKEN:
+        print("=" * 60)
+        print("WARNING: HUGGINGFACE_TOKEN environment variable not set!")
+        print("Set it in Render Dashboard > Environment > Environment Variables")
+        print("Variable name: HUGGINGFACE_TOKEN")
+        print("Variable value: <your-hf-token>")
+        print("=" * 60)
+    
     # Download Derm Foundation model from Hugging Face if not present
     if not os.path.exists(DERM_FOUNDATION_PATH) or not os.path.exists(os.path.join(DERM_FOUNDATION_PATH, "saved_model.pb")):
         print("Derm Foundation model not found locally. Downloading from Hugging Face...")
@@ -467,7 +478,8 @@ async def health_check():
             "derm_foundation": derm_model is not None,
             "easi_model": easi_model is not None
         },
-        "available_conditions": len(easi_model.mlb.classes_) if easi_model else 0
+        "available_conditions": len(easi_model.mlb.classes_) if easi_model else 0,
+        "hf_token_configured": HF_TOKEN is not None
     }
 
 
