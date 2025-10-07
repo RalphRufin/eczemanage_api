@@ -63,6 +63,7 @@ app.add_middleware(
 
 # Configuration
 HF_REPO_ID = "google/derm-foundation"
+HF_TOKEN = os.environ.get("HF_TOKEN")  # Load from environment or use fallback
 DERM_FOUNDATION_PATH = "./derm_foundation/"
 
 # Response Models
@@ -222,6 +223,7 @@ def download_derm_foundation_from_hf(output_dir):
             downloaded_path = hf_hub_download(
                 repo_id=HF_REPO_ID,
                 filename=file_path,
+                token=HF_TOKEN,
                 cache_dir=None,  # Use default cache
                 local_dir=output_dir,
                 local_dir_use_symlinks=False
