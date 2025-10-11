@@ -11,7 +11,7 @@ Endpoints:
 - GET /conditions - Get list of available conditions
 
 Installation:
-pip install fastapi uvicorn python-multipart pillow tensorflow numpy pandas huggingface-hub
+pip install fastapi uvicorn python-multipart pillow tensorflow numpy pandas huggingface-hub requests
 
 Run:
 uvicorn api:app --host 0.0.0.0 --port 8000 --reload
@@ -43,6 +43,7 @@ import numpy as np
 from PIL import Image
 import pickle
 import pandas as pd
+import requests
 from huggingface_hub import hf_hub_download, login
 
 # Initialize FastAPI app
@@ -64,6 +65,7 @@ app.add_middleware(
 # Configuration
 HF_REPO_ID = "google/derm-foundation"
 DERM_FOUNDATION_PATH = "./derm_foundation/"
+R2_BASE_URL = os.environ.get("R2_BASE_URL", "https://r2-worker.eczemanage.workers.dev")
 
 # Get Hugging Face token from environment variable
 HF_TOKEN = os.environ.get("HUGGINGFACE_TOKEN")
@@ -96,6 +98,7 @@ class HealthResponse(BaseModel):
     models_loaded: Dict[str, bool]
     available_conditions: int
     hf_token_configured: bool
+    model_source: str
 
 class ErrorResponse(BaseModel):
     success: bool = False
@@ -201,7 +204,58 @@ class DermFoundationNeuralNetwork:
         }
 
 
-# Helper function to download from Hugging Face
+# Helper function to download from Cloudflare R2
+def download_derm_foundation_from_r2(output_dir):
+    """Download Derm Foundation model from Cloudflare R2"""
+    try:
+        print(f"Downloading Derm Foundation model from R2 ({R2_BASE_URL})...")
+        os.makedirs(output_dir, exist_ok=True)
+        
+        # Files to download
+        files_to_download = [
+            "saved_model.pb",
+            "variables/variables.index",
+            "variables/variables.data-00000-of-00001"
+        ]
+        
+        for file_path in files_to_download:
+            print(f"Downloading {file_path}...")
+            url = f"{R2_BASE_URL}/{file_path}"
+            local_path = os.path.join(output_dir, file_path)
+            
+            # Create subdirectories if needed
+            os.makedirs(os.path.dirname(local_path), exist_ok=True)
+            
+            # Download file with streaming for large files
+            response = requests.get(url, stream=True, timeout=300)
+            response.raise_for_status()
+            
+            # Get file size if available
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(local_path, 'wb') as f:
+                if total_size > 0:
+                    downloaded = 0
+                    for chunk in response.iter_content(chunk_size=1024*1024):  # 1MB chunks
+                        f.write(chunk)
+                        downloaded += len(chunk)
+                        progress = (downloaded / total_size) * 100
+                        print(f"  Progress: {progress:.1f}%", end='\r')
+                    print()  # New line after progress
+                else:
+                    for chunk in response.iter_content(chunk_size=1024*1024):
+                        f.write(chunk)
+            
+            print(f"✓ Downloaded: {file_path}")
+        
+        print(f"✓ Derm Foundation model downloaded successfully from R2")
+        return True
+    except Exception as e:
+        print(f"✗ Error downloading from R2: {e}")
+        return False
+
+
+# Helper function to download from Hugging Face (Fallback)
 def download_derm_foundation_from_hf(output_dir):
     """Download Derm Foundation model from Hugging Face"""
     try:
@@ -233,17 +287,17 @@ def download_derm_foundation_from_hf(output_dir):
             downloaded_path = hf_hub_download(
                 repo_id=HF_REPO_ID,
                 filename=file_path,
-                token=HF_TOKEN,  # Pass token explicitly
+                token=HF_TOKEN,
                 cache_dir=None,
                 local_dir=output_dir,
                 local_dir_use_symlinks=False
             )
-            print(f"Downloaded: {file_path}")
+            print(f"✓ Downloaded: {file_path}")
         
-        print(f"Derm Foundation model downloaded successfully to {output_dir}")
+        print(f"✓ Derm Foundation model downloaded successfully from HuggingFace")
         return True
     except Exception as e:
-        print(f"Error downloading from Hugging Face: {e}")
+        print(f"✗ Error downloading from Hugging Face: {e}")
         print(f"Make sure HUGGINGFACE_TOKEN is set in Render environment variables")
         return False
 
@@ -408,36 +462,58 @@ def generate_derm_foundation_embedding(model, image):
 # Global model instances
 derm_model = None
 easi_model = None
+model_source = "not_loaded"
 
 
 @app.on_event("startup")
 async def load_models():
     """Load models on startup"""
-    global derm_model, easi_model
+    global derm_model, easi_model, model_source
     
-    # Check for HF token
-    if not HF_TOKEN:
-        print("=" * 60)
-        print("WARNING: HUGGINGFACE_TOKEN environment variable not set!")
-        print("Set it in Render Dashboard > Environment > Environment Variables")
-        print("Variable name: HUGGINGFACE_TOKEN")
-        print("Variable value: <your-hf-token>")
-        print("=" * 60)
-    
-    # Download Derm Foundation model from Hugging Face if not present
+    # Download Derm Foundation model if not present
     if not os.path.exists(DERM_FOUNDATION_PATH) or not os.path.exists(os.path.join(DERM_FOUNDATION_PATH, "saved_model.pb")):
-        print("Derm Foundation model not found locally. Downloading from Hugging Face...")
-        success = download_derm_foundation_from_hf(DERM_FOUNDATION_PATH)
-        if not success:
-            print("WARNING: Failed to download Derm Foundation model!")
+        print("=" * 60)
+        print("Derm Foundation model not found locally.")
+        print("=" * 60)
+        
+        # Try R2 first (fast)
+        print("\n[1/2] Attempting download from Cloudflare R2...")
+        success = download_derm_foundation_from_r2(DERM_FOUNDATION_PATH)
+        
+        if success:
+            model_source = "cloudflare_r2"
+        else:
+            # Fallback to HuggingFace
+            print("\n[2/2] R2 failed, trying HuggingFace as fallback...")
+            
+            if not HF_TOKEN:
+                print("=" * 60)
+                print("WARNING: HUGGINGFACE_TOKEN environment variable not set!")
+                print("Set it in Render Dashboard > Environment > Environment Variables")
+                print("Variable name: HUGGINGFACE_TOKEN")
+                print("Variable value: <your-hf-token>")
+                print("=" * 60)
+            
+            success = download_derm_foundation_from_hf(DERM_FOUNDATION_PATH)
+            if success:
+                model_source = "huggingface"
+            else:
+                print("=" * 60)
+                print("ERROR: Failed to download model from both R2 and HuggingFace!")
+                print("=" * 60)
+                model_source = "failed"
+    else:
+        print("Derm Foundation model found locally.")
+        model_source = "local_cache"
     
     # Load Derm Foundation model
     if os.path.exists(os.path.join(DERM_FOUNDATION_PATH, "saved_model.pb")):
         try:
+            print(f"Loading Derm-Foundation model from: {DERM_FOUNDATION_PATH}")
             derm_model = tf.saved_model.load(DERM_FOUNDATION_PATH)
-            print(f"Derm-Foundation model loaded from: {DERM_FOUNDATION_PATH}")
+            print(f"✓ Derm-Foundation model loaded successfully (source: {model_source})")
         except Exception as e:
-            print(f"Failed to load Derm Foundation model: {str(e)}")
+            print(f"✗ Failed to load Derm Foundation model: {str(e)}")
     
     # Load EASI model (keep this local in your repo)
     model_path = './trained_model/easi_severity_model_derm_foundation_individual.pkl'
@@ -445,13 +521,24 @@ async def load_models():
         easi_model = DermFoundationNeuralNetwork()
         success = easi_model.load_model(model_path)
         if success:
-            print(f"EASI model loaded from: {model_path}")
+            print(f"✓ EASI model loaded from: {model_path}")
         else:
-            print(f"Failed to load EASI model")
+            print(f"✗ Failed to load EASI model")
             easi_model = None
+    else:
+        print(f"✗ EASI model not found at: {model_path}")
     
     if derm_model is None or easi_model is None:
+        print("=" * 60)
         print("WARNING: Some models failed to load!")
+        print(f"Derm Foundation: {'✓' if derm_model else '✗'}")
+        print(f"EASI Model: {'✓' if easi_model else '✗'}")
+        print("=" * 60)
+    else:
+        print("=" * 60)
+        print("✓ All models loaded successfully!")
+        print(f"Model source: {model_source}")
+        print("=" * 60)
 
 
 # API Endpoints
@@ -462,6 +549,7 @@ async def root():
     return {
         "message": "EASI Severity Prediction API",
         "version": "1.0.0",
+        "model_source": model_source,
         "docs": "/docs",
         "health": "/health",
         "predict": "/predict",
@@ -479,7 +567,8 @@ async def health_check():
             "easi_model": easi_model is not None
         },
         "available_conditions": len(easi_model.mlb.classes_) if easi_model else 0,
-        "hf_token_configured": HF_TOKEN is not None
+        "hf_token_configured": HF_TOKEN is not None,
+        "model_source": model_source
     }
 
 
