@@ -1,28 +1,25 @@
-FROM python:3.10-slim
+FROM python:3.9-slim
 
 WORKDIR /app
 
 # Install system dependencies
-RUN apt-get update && apt-get install -y \
-    libgomp1 \
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    gcc \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first for better caching
+# Copy and install Python dependencies
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Copy application code
+# Copy all application files
 COPY . .
 
-# Create models directory
-RUN mkdir -p models/derm_foundation models/trained_model
+# Download model during Docker build (happens in Render's cloud, not your computer)
+RUN python -c "import os; os.makedirs('./derm_foundation/', exist_ok=True)"
+RUN python download_model.py
 
 # Expose port
 EXPOSE 8000
 
-# Health check
-HEALTHCHECK --interval=30s --timeout=10s --start-period=5s --retries=3 \
-    CMD python -c "import requests; requests.get('http://localhost:8000/health')"
-
-# Run the application
+# Start the API
 CMD ["uvicorn", "api:app", "--host", "0.0.0.0", "--port", "8000"]
