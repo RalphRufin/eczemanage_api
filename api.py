@@ -204,9 +204,9 @@ class DermFoundationNeuralNetwork:
         }
 
 
-# Helper function to download from Cloudflare R2
+# Helper function to download from Cloudflare R2 with chunked streaming
 def download_derm_foundation_from_r2(output_dir):
-    """Download Derm Foundation model from Cloudflare R2"""
+    """Download Derm Foundation model from Cloudflare R2 using memory-efficient streaming"""
     try:
         print(f"Downloading Derm Foundation model from R2 ({R2_BASE_URL})...")
         os.makedirs(output_dir, exist_ok=True)
@@ -226,25 +226,28 @@ def download_derm_foundation_from_r2(output_dir):
             # Create subdirectories if needed
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             
-            # Download file with streaming for large files
-            response = requests.get(url, stream=True, timeout=300)
-            response.raise_for_status()
-            
-            # Get file size if available
-            total_size = int(response.headers.get('content-length', 0))
-            
-            with open(local_path, 'wb') as f:
-                if total_size > 0:
-                    downloaded = 0
-                    for chunk in response.iter_content(chunk_size=1024*1024):  # 1MB chunks
-                        f.write(chunk)
-                        downloaded += len(chunk)
-                        progress = (downloaded / total_size) * 100
-                        print(f"  Progress: {progress:.1f}%", end='\r')
-                    print()  # New line after progress
-                else:
-                    for chunk in response.iter_content(chunk_size=1024*1024):
-                        f.write(chunk)
+            # Download file with streaming (MEMORY EFFICIENT - writes directly to disk)
+            # Use small chunk size to avoid memory spikes
+            with requests.get(url, stream=True, timeout=600) as response:
+                response.raise_for_status()
+                
+                total_size = int(response.headers.get('content-length', 0))
+                downloaded = 0
+                
+                # Write directly to disk in small chunks (512KB to stay under memory limit)
+                with open(local_path, 'wb') as f:
+                    for chunk in response.iter_content(chunk_size=512*1024):  # 512KB chunks
+                        if chunk:  # filter out keep-alive new chunks
+                            f.write(chunk)
+                            downloaded += len(chunk)
+                            
+                            if total_size > 0:
+                                progress = (downloaded / total_size) * 100
+                                mb_downloaded = downloaded / (1024*1024)
+                                mb_total = total_size / (1024*1024)
+                                print(f"  Progress: {progress:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end='\r')
+                
+                print()  # New line after progress
             
             print(f"✓ Downloaded: {file_path}")
         
@@ -252,12 +255,14 @@ def download_derm_foundation_from_r2(output_dir):
         return True
     except Exception as e:
         print(f"✗ Error downloading from R2: {e}")
+        import traceback
+        traceback.print_exc()
         return False
 
 
-# Helper function to download from Hugging Face (Fallback)
+# Helper function to download from Hugging Face (Fallback) with memory-efficient streaming
 def download_derm_foundation_from_hf(output_dir):
-    """Download Derm Foundation model from Hugging Face"""
+    """Download Derm Foundation model from Hugging Face using memory-efficient streaming"""
     try:
         # Login to Hugging Face if token is available
         if HF_TOKEN:
@@ -284,13 +289,15 @@ def download_derm_foundation_from_hf(output_dir):
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             
             # Download file with token if available
+            # hf_hub_download handles streaming internally
             downloaded_path = hf_hub_download(
                 repo_id=HF_REPO_ID,
                 filename=file_path,
                 token=HF_TOKEN,
                 cache_dir=None,
                 local_dir=output_dir,
-                local_dir_use_symlinks=False
+                local_dir_use_symlinks=False,
+                resume_download=True  # Resume if interrupted
             )
             print(f"✓ Downloaded: {file_path}")
         
@@ -299,6 +306,8 @@ def download_derm_foundation_from_hf(output_dir):
     except Exception as e:
         print(f"✗ Error downloading from Hugging Face: {e}")
         print(f"Make sure HUGGINGFACE_TOKEN is set in Render environment variables")
+        import traceback
+        traceback.print_exc()
         return False
 
 
