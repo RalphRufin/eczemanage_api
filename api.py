@@ -226,28 +226,39 @@ def download_derm_foundation_from_r2(output_dir):
             # Create subdirectories if needed
             os.makedirs(os.path.dirname(local_path), exist_ok=True)
             
-            # Download file with streaming (MEMORY EFFICIENT - writes directly to disk)
-            # Use small chunk size to avoid memory spikes
-            with requests.get(url, stream=True, timeout=600) as response:
+            # Download file with streaming (ULTRA MEMORY EFFICIENT)
+            # Use tiny chunk size and aggressive garbage collection
+            import gc
+            
+            with requests.get(url, stream=True, timeout=900) as response:
                 response.raise_for_status()
                 
                 total_size = int(response.headers.get('content-length', 0))
                 downloaded = 0
+                chunk_count = 0
                 
-                # Write directly to disk in small chunks (512KB to stay under memory limit)
+                # Write directly to disk in tiny chunks (256KB to minimize memory)
                 with open(local_path, 'wb') as f:
-                    for chunk in response.iter_content(chunk_size=512*1024):  # 512KB chunks
-                        if chunk:  # filter out keep-alive new chunks
+                    for chunk in response.iter_content(chunk_size=256*1024):  # 256KB chunks
+                        if chunk:
                             f.write(chunk)
+                            f.flush()  # Force write to disk
                             downloaded += len(chunk)
+                            chunk_count += 1
                             
-                            if total_size > 0:
+                            # Aggressive garbage collection every 10 chunks (~2.5MB)
+                            if chunk_count % 10 == 0:
+                                gc.collect()
+                            
+                            # Less frequent progress updates to reduce print overhead
+                            if total_size > 0 and chunk_count % 20 == 0:
                                 progress = (downloaded / total_size) * 100
                                 mb_downloaded = downloaded / (1024*1024)
                                 mb_total = total_size / (1024*1024)
-                                print(f"  Progress: {progress:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)", end='\r')
+                                print(f"  Progress: {progress:.1f}% ({mb_downloaded:.1f}/{mb_total:.1f} MB)")
                 
                 print()  # New line after progress
+                gc.collect()  # Final cleanup
             
             print(f"✓ Downloaded: {file_path}")
         
@@ -479,7 +490,11 @@ async def load_models():
     """Load models on startup"""
     global derm_model, easi_model, model_source
     
-    # Download Derm Foundation model if not present
+    # Force garbage collection before starting
+    import gc
+    gc.collect()
+    
+    # Check if model exists (should be pre-downloaded in Docker or already cached)
     if not os.path.exists(DERM_FOUNDATION_PATH) or not os.path.exists(os.path.join(DERM_FOUNDATION_PATH, "saved_model.pb")):
         print("=" * 60)
         print("Derm Foundation model not found locally.")
@@ -512,15 +527,21 @@ async def load_models():
                 print("=" * 60)
                 model_source = "failed"
     else:
-        print("Derm Foundation model found locally.")
+        print("✓ Derm Foundation model found locally (pre-downloaded or cached)")
         model_source = "local_cache"
     
     # Load Derm Foundation model
     if os.path.exists(os.path.join(DERM_FOUNDATION_PATH, "saved_model.pb")):
         try:
             print(f"Loading Derm-Foundation model from: {DERM_FOUNDATION_PATH}")
+            # Force garbage collection before loading large model
+            gc.collect()
+            
             derm_model = tf.saved_model.load(DERM_FOUNDATION_PATH)
             print(f"✓ Derm-Foundation model loaded successfully (source: {model_source})")
+            
+            # Cleanup after loading
+            gc.collect()
         except Exception as e:
             print(f"✗ Failed to load Derm Foundation model: {str(e)}")
     
